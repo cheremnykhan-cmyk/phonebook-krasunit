@@ -29,7 +29,7 @@ def init_db():
 def index():
     return render_template_string(HTML_TEMPLATE)
 
-# Поиск и получение контактов
+# Получить контакты + поиск
 @app.route('/api/contacts', methods=['GET'])
 def get_contacts():
     search = request.args.get('q', '').lower()
@@ -60,7 +60,6 @@ def export_csv():
 
     output = StringIO()
     writer = csv.writer(output)
-    # Заголовки
     writer.writerow(['ID', 'Имя', 'Телефон', 'Организация', 'Должность', 'Email', 'Адрес', 'Примечания'])
     for row in rows:
         writer.writerow(row)
@@ -73,7 +72,7 @@ def export_csv():
         download_name='krasunit_phonebook.csv'
     )
 
-# Экспорт в JSON (для бэкапа)
+# Экспорт в JSON
 @app.route('/api/export/json')
 def export_json():
     conn = sqlite3.connect('phonebook.db')
@@ -81,7 +80,17 @@ def export_json():
     c.execute("SELECT * FROM contacts")
     contacts = [dict(row) for row in c.fetchall()]
     conn.close()
-    return jsonify(contacts)
+    return send_file(
+        BytesIO(json.dumps(contacts, ensure_ascii=False, indent=2).encode('utf-8')),
+        mimetype='application/json',
+        as_attachment=True,
+        download_name='krasunit_phonebook.json'
+    )
+
+# 💾 СКАЧАТЬ ПОЛНУЮ БАЗУ ДАННЫХ (главная фича!)
+@app.route('/api/backup')
+def download_backup():
+    return send_file('phonebook.db', as_attachment=True, download_name='krasunit_phonebook.db')
 
 # Добавить контакт
 @app.route('/api/contacts', methods=['POST'])
@@ -141,7 +150,7 @@ def manage_contact(contact_id):
         conn.close()
         return jsonify({"success": True})
 
-# === HTML ===
+# === HTML + JS ===
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="ru">
@@ -156,7 +165,8 @@ HTML_TEMPLATE = """
     input, textarea, button { padding: 10px; margin: 5px 0; width: 100%; box-sizing: border-box; border-radius: 4px; border: 1px solid #ccc; }
     button { background: #4CAF50; color: white; cursor: pointer; }
     button:hover { opacity: 0.9; }
-    .export-btn { background: #2196F3; }
+    .export-btn { background: #2196F3; margin-right: 5px; }
+    .backup-btn { background: #9C27B0; }
     .contact { background: white; padding: 14px; margin: 12px 0; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); cursor: pointer; }
     .admin-actions { display: none; margin-top: 25px; padding: 15px; background: #fffbe6; border-radius: 6px; }
     h1 { text-align: center; color: #2c3e50; }
@@ -179,8 +189,10 @@ HTML_TEMPLATE = """
     <input type="text" id="address" placeholder="Адрес" />
     <textarea id="notes" rows="2" placeholder="Примечания"></textarea>
     <button onclick="addContact()">➕ Добавить контакт</button>
+    <br><br>
     <button class="export-btn" onclick="exportCSV()">📥 Экспорт в CSV</button>
     <button class="export-btn" onclick="exportJSON()">📄 Экспорт в JSON</button>
+    <button class="backup-btn" onclick="backupDB()">💾 Бэкап базы (phonebook.db)</button>
   </div>
 
   <h2>Контакты:</h2>
@@ -200,7 +212,7 @@ HTML_TEMPLATE = """
       <input type="text" id="editAddress" placeholder="Адрес" />
       <textarea id="editNotes" rows="2" placeholder="Примечания"></textarea>
       <button onclick="updateContact()">✅ Сохранить</button>
-      <button class="delete-btn" onclick="deleteContact()">🗑️ Удалить</button>
+      <button class="delete-btn" style="background:#f44336;" onclick="deleteContact()">🗑️ Удалить</button>
     </div>
   </div>
 
@@ -336,12 +348,18 @@ HTML_TEMPLATE = """
       }
     }
 
-    async function exportCSV() {
+    function exportCSV() {
       window.location.href = '/api/export/csv';
     }
 
-    async function exportJSON() {
+    function exportJSON() {
       window.location.href = '/api/export/json';
+    }
+
+    function backupDB() {
+      if (confirm('Скачать полную резервную копию базы данных?\\nФайл: krasunit_phonebook.db')) {
+        window.location.href = '/api/backup';
+      }
     }
 
     loadContacts();
