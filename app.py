@@ -1,20 +1,13 @@
 from flask import Flask, request, jsonify, render_template_string, send_file
 import sqlite3
 import os
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
-import pandas as pd
-from io import BytesIO
+import csv
+from io import StringIO, BytesIO
 
 app = Flask(__name__)
 
-# === НАСТРОЙКИ (измени под себя) ===
+# === Настройки ===
 ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'KrasUnit2026!PhoneBook')
-SMTP_SERVER = os.environ.get('SMTP_SERVER', 'smtp.mail.ru')
-SMTP_PORT = int(os.environ.get('SMTP_PORT', 587))
-EMAIL_USER = os.environ.get('EMAIL_USER', 'KrasUnit@mail.ru')
-EMAIL_PASS = os.environ.get('EMAIL_PASS', 'твой_пароль_от_mail.ru')
 
 def init_db():
     conn = sqlite3.connect('phonebook.db')
@@ -36,7 +29,7 @@ def init_db():
 def index():
     return render_template_string(HTML_TEMPLATE)
 
-# Получить все контакты + поиск
+# Поиск и получение контактов
 @app.route('/api/contacts', methods=['GET'])
 def get_contacts():
     search = request.args.get('q', '').lower()
@@ -56,26 +49,41 @@ def get_contacts():
     conn.close()
     return jsonify(contacts)
 
-# Экспорт в Excel
-@app.route('/api/export', methods=['GET'])
-def export_excel():
+# Экспорт в CSV
+@app.route('/api/export/csv')
+def export_csv():
     conn = sqlite3.connect('phonebook.db')
-    df = pd.read_sql_query("SELECT * FROM contacts", conn)
+    c = conn.cursor()
+    c.execute("SELECT * FROM contacts")
+    rows = c.fetchall()
     conn.close()
+
+    output = StringIO()
+    writer = csv.writer(output)
+    # Заголовки
+    writer.writerow(['ID', 'Имя', 'Телефон', 'Организация', 'Должность', 'Email', 'Адрес', 'Примечания'])
+    for row in rows:
+        writer.writerow(row)
     
-    output = BytesIO()
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        df.to_excel(writer, index=False, sheet_name='Контакты')
     output.seek(0)
-    
     return send_file(
-        output,
-        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        BytesIO(output.getvalue().encode('utf-8')),
+        mimetype='text/csv',
         as_attachment=True,
-        download_name='krasunit_phonebook.xlsx'
+        download_name='krasunit_phonebook.csv'
     )
 
-# Добавить контакт + уведомление
+# Экспорт в JSON (для бэкапа)
+@app.route('/api/export/json')
+def export_json():
+    conn = sqlite3.connect('phonebook.db')
+    c = conn.cursor()
+    c.execute("SELECT * FROM contacts")
+    contacts = [dict(row) for row in c.fetchall()]
+    conn.close()
+    return jsonify(contacts)
+
+# Добавить контакт
 @app.route('/api/contacts', methods=['POST'])
 def add_contact():
     data = request.json
@@ -95,18 +103,11 @@ def add_contact():
                data.get('email', ''),
                data.get('address', ''),
                data.get('notes', '')))
-    contact_id = c.lastrowid
     conn.commit()
     conn.close()
+    return jsonify({"success": True}), 201
 
-    # Отправка email-уведомления
-    try:
-        send_notification(data)
-    except Exception as e:
-        print(f"Ошибка отправки email: {e}")
-
-    return jsonify({"success": True, "id": contact_id}), 201
-
+# Управление (редактирование/удаление)
 @app.route('/api/contacts/<int:contact_id>', methods=['PUT', 'DELETE'])
 def manage_contact(contact_id):
     password = request.headers.get('X-Admin-Password')
@@ -140,36 +141,7 @@ def manage_contact(contact_id):
         conn.close()
         return jsonify({"success": True})
 
-# Функция отправки email
-def send_notification(contact):
-    msg = MIMEMultipart()
-    msg['From'] = EMAIL_USER
-    msg['To'] = EMAIL_USER
-    msg['Subject'] = "📞 Новый контакт в справочнике КрасЮнит"
-    
-    body = f"""
-    Добавлен новый контакт:
-    Имя: {contact.get('name')}
-    Телефон: {contact.get('phone')}
-    Должность: {contact.get('position')}
-    Организация: {contact.get('organization')}
-    Email: {contact.get('email', '—')}
-    Адрес: {contact.get('address', '—')}
-    Примечания: {contact.get('notes', '—')}
-    """
-    msg.attach(MIMEText(body, 'plain', 'utf-8'))
-
-    try:
-        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
-        server.starttls()
-        server.login(EMAIL_USER, EMAIL_PASS)
-        text = msg.as_string()
-        server.sendmail(EMAIL_USER, EMAIL_USER, text)
-        server.quit()
-    except Exception as e:
-        print(f"Ошибка SMTP: {e}")
-
-# === HTML + JS ===
+# === HTML ===
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="ru">
@@ -184,7 +156,6 @@ HTML_TEMPLATE = """
     input, textarea, button { padding: 10px; margin: 5px 0; width: 100%; box-sizing: border-box; border-radius: 4px; border: 1px solid #ccc; }
     button { background: #4CAF50; color: white; cursor: pointer; }
     button:hover { opacity: 0.9; }
-    .delete-btn { background: #f44336; }
     .export-btn { background: #2196F3; }
     .contact { background: white; padding: 14px; margin: 12px 0; border-radius: 6px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); cursor: pointer; }
     .admin-actions { display: none; margin-top: 25px; padding: 15px; background: #fffbe6; border-radius: 6px; }
@@ -199,16 +170,17 @@ HTML_TEMPLATE = """
   <h1>📞 Корпоративный справочник «КрасЮнит»</h1>
 
   <div>
-    <input type="text" id="search" placeholder="Поиск по имени, телефону, email..." oninput="loadContacts()" />
+    <input type="text" id="search" placeholder="Поиск по имени, телефону..." oninput="loadContacts()" />
     <input type="text" id="name" placeholder="Имя сотрудника" />
     <input type="text" id="phone" placeholder="+7 (999) 999-99-99" maxlength="18" oninput="formatPhone(this)" />
     <input type="text" id="organization" placeholder="Организация" value="КрасЮнит" />
     <input type="text" id="position" placeholder="Должность" />
-    <input type="email" id="email" placeholder="Эл. почта (необязательно)" />
-    <input type="text" id="address" placeholder="Адрес (необязательно)" />
-    <textarea id="notes" rows="2" placeholder="Примечания (необязательно)"></textarea>
+    <input type="email" id="email" placeholder="Эл. почта" />
+    <input type="text" id="address" placeholder="Адрес" />
+    <textarea id="notes" rows="2" placeholder="Примечания"></textarea>
     <button onclick="addContact()">➕ Добавить контакт</button>
-    <button class="export-btn" onclick="exportExcel()">📥 Экспорт в Excel</button>
+    <button class="export-btn" onclick="exportCSV()">📥 Экспорт в CSV</button>
+    <button class="export-btn" onclick="exportJSON()">📄 Экспорт в JSON</button>
   </div>
 
   <h2>Контакты:</h2>
@@ -290,7 +262,6 @@ HTML_TEMPLATE = """
           notes: document.getElementById('notes').value.trim()
         })
       });
-      // Сброс
       document.getElementById('name').value = '';
       document.getElementById('phone').value = '';
       document.getElementById('position').value = '';
@@ -365,8 +336,12 @@ HTML_TEMPLATE = """
       }
     }
 
-    async function exportExcel() {
-      window.location.href = '/api/export';
+    async function exportCSV() {
+      window.location.href = '/api/export/csv';
+    }
+
+    async function exportJSON() {
+      window.location.href = '/api/export/json';
     }
 
     loadContacts();
