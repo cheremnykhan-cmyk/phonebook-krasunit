@@ -1,3 +1,156 @@
+from flask import Flask, request, jsonify, render_template_string, send_file
+import sqlite3
+import os
+import csv
+from io import StringIO, BytesIO
+
+app = Flask(__name__)
+
+# === Настройки ===
+ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'KrasUnit2026!PhoneBook')
+
+def init_db():
+    conn = sqlite3.connect('phonebook.db')
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS contacts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    phone TEXT NOT NULL,
+                    organization TEXT NOT NULL,
+                    position TEXT NOT NULL,
+                    email TEXT,
+                    address TEXT,
+                    notes TEXT
+                )''')
+    conn.commit()
+    conn.close()
+
+@app.route('/')
+def index():
+    return render_template_string(HTML_TEMPLATE)
+
+# Получить контакты + поиск
+@app.route('/api/contacts', methods=['GET'])
+def get_contacts():
+    search = request.args.get('q', '').lower()
+    conn = sqlite3.connect('phonebook.db')
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    if search:
+        c.execute("""SELECT * FROM contacts 
+                     WHERE LOWER(name) LIKE ? OR 
+                           LOWER(phone) LIKE ? OR 
+                           LOWER(email) LIKE ? OR 
+                           LOWER(address) LIKE ?""",
+                  (f'%{search}%', f'%{search}%', f'%{search}%', f'%{search}%'))
+    else:
+        c.execute("SELECT * FROM contacts")
+    contacts = [dict(row) for row in c.fetchall()]
+    conn.close()
+    return jsonify(contacts)
+
+# Экспорт в CSV
+@app.route('/api/export/csv')
+def export_csv():
+    conn = sqlite3.connect('phonebook.db')
+    c = conn.cursor()
+    c.execute("SELECT * FROM contacts")
+    rows = c.fetchall()
+    conn.close()
+
+    output = StringIO()
+    writer = csv.writer(output)
+    writer.writerow(['ID', 'Имя', 'Телефон', 'Организация', 'Должность', 'Email', 'Адрес', 'Примечания'])
+    for row in rows:
+        writer.writerow(row)
+    
+    output.seek(0)
+    return send_file(
+        BytesIO(output.getvalue().encode('utf-8')),
+        mimetype='text/csv',
+        as_attachment=True,
+        download_name='krasunit_phonebook.csv'
+    )
+
+# Экспорт в JSON
+@app.route('/api/export/json')
+def export_json():
+    conn = sqlite3.connect('phonebook.db')
+    c = conn.cursor()
+    c.execute("SELECT * FROM contacts")
+    contacts = [dict(row) for row in c.fetchall()]
+    conn.close()
+    return send_file(
+        BytesIO(json.dumps(contacts, ensure_ascii=False, indent=2).encode('utf-8')),
+        mimetype='application/json',
+        as_attachment=True,
+        download_name='krasunit_phonebook.json'
+    )
+
+# 💾 СКАЧАТЬ ПОЛНУЮ БАЗУ ДАННЫХ (главная фича!)
+@app.route('/api/backup')
+def download_backup():
+    return send_file('phonebook.db', as_attachment=True, download_name='krasunit_phonebook.db')
+
+# Добавить контакт
+@app.route('/api/contacts', methods=['POST'])
+def add_contact():
+    data = request.json
+    required = ['name', 'phone', 'organization', 'position']
+    if not all(k in data for k in required):
+        return jsonify({"error": "Обязательные поля не заполнены"}), 400
+
+    conn = sqlite3.connect('phonebook.db')
+    c = conn.cursor()
+    c.execute("""INSERT INTO contacts 
+                 (name, phone, organization, position, email, address, notes) 
+                 VALUES (?, ?, ?, ?, ?, ?, ?)""",
+              (data.get('name'),
+               data.get('phone'),
+               data.get('organization', 'КрасЮнит'),
+               data.get('position'),
+               data.get('email', ''),
+               data.get('address', ''),
+               data.get('notes', '')))
+    conn.commit()
+    conn.close()
+    return jsonify({"success": True}), 201
+
+# Управление (редактирование/удаление)
+@app.route('/api/contacts/<int:contact_id>', methods=['PUT', 'DELETE'])
+def manage_contact(contact_id):
+    password = request.headers.get('X-Admin-Password')
+    if password != ADMIN_PASSWORD:
+        return jsonify({"error": "Доступ запрещён"}), 403
+
+    conn = sqlite3.connect('phonebook.db')
+    c = conn.cursor()
+
+    if request.method == 'DELETE':
+        c.execute("DELETE FROM contacts WHERE id = ?", (contact_id,))
+        conn.commit()
+        conn.close()
+        return jsonify({"success": True})
+
+    elif request.method == 'PUT':
+        data = request.json
+        c.execute("""UPDATE contacts SET 
+                     name = ?, phone = ?, organization = ?, position = ?,
+                     email = ?, address = ?, notes = ?
+                     WHERE id = ?""",
+                  (data.get('name'),
+                   data.get('phone'),
+                   data.get('organization', 'КрасЮнит'),
+                   data.get('position'),
+                   data.get('email', ''),
+                   data.get('address', ''),
+                   data.get('notes', ''),
+                   contact_id))
+        conn.commit()
+        conn.close()
+        return jsonify({"success": True})
+
+# === HTML + JS ===
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="ru">
@@ -132,24 +285,22 @@ HTML_TEMPLATE = """
 
     function showEdit(id) {
       document.getElementById('adminPanel').style.display = 'block';
-      const contact = contacts.find(c => c.id == id);
-      if (!contact) return;
-
-      document.getElementById('editId').value = contact.id;
-      document.getElementById('editName').value = contact.name;
-      document.getElementById('editPhone').value = contact.phone;
-      document.getElementById('editOrganization').value = contact.organization;
-      document.getElementById('editPosition').value = contact.position;
-      document.getElementById('editEmail').value = contact.email || '';
-      document.getElementById('editAddress').value = contact.address || '';
-      document.getElementById('editNotes').value = contact.notes || '';
+      const c = contacts.find(x => x.id == id);
+      document.getElementById('editId').value = id;
+      document.getElementById('editName').value = c.name;
+      document.getElementById('editPhone').value = c.phone;
+      document.getElementById('editOrganization').value = c.organization;
+      document.getElementById('editPosition').value = c.position;
+      document.getElementById('editEmail').value = c.email || '';
+      document.getElementById('editAddress').value = c.address || '';
+      document.getElementById('editNotes').value = c.notes || '';
       document.getElementById('editForm').style.display = 'block';
     }
 
     async function updateContact() {
       const id = document.getElementById('editId').value;
       const pass = document.getElementById('adminPass').value;
-      if (!pass) return alert('Введите пароль администратора!');
+      if (!pass) return alert('Введите пароль!');
 
       const data = {
         name: document.getElementById('editName').value.trim(),
@@ -160,17 +311,11 @@ HTML_TEMPLATE = """
         address: document.getElementById('editAddress').value.trim(),
         notes: document.getElementById('editNotes').value.trim()
       };
-
-      if (!data.name || !data.phone || !data.position) {
-        return alert('Заполните обязательные поля: Имя, Телефон, Должность');
-      }
+      if (!data.name || !data.phone || !data.position) return alert('Заполните обязательные поля');
 
       const res = await fetch(`${API}/${id}`, {
         method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Admin-Password': pass
-        },
+        headers: {'Content-Type': 'application/json', 'X-Admin-Password': pass},
         body: JSON.stringify(data)
       });
 
@@ -179,8 +324,7 @@ HTML_TEMPLATE = """
         document.getElementById('editForm').style.display = 'none';
         document.getElementById('adminPass').value = '';
       } else {
-        const error = await res.json();
-        alert('Ошибка: ' + (error.error || 'сервер не отвечает'));
+        alert('Ошибка: неверный пароль или сервер не отвечает.');
       }
     }
 
@@ -188,7 +332,7 @@ HTML_TEMPLATE = """
       if (!confirm('Удалить контакт?')) return;
       const id = document.getElementById('editId').value;
       const pass = document.getElementById('adminPass').value;
-      if (!pass) return alert('Введите пароль администратора!');
+      if (!pass) return alert('Введите пароль!');
 
       const res = await fetch(`${API}/${id}`, {
         method: 'DELETE',
@@ -200,8 +344,7 @@ HTML_TEMPLATE = """
         document.getElementById('editForm').style.display = 'none';
         document.getElementById('adminPass').value = '';
       } else {
-        const error = await res.json();
-        alert('Ошибка: ' + (error.error || 'доступ запрещён'));
+        alert('Ошибка: доступ запрещён.');
       }
     }
 
@@ -224,3 +367,7 @@ HTML_TEMPLATE = """
 </body>
 </html>
 """
+
+if __name__ == '__main__':
+    init_db()
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
