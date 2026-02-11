@@ -1,18 +1,135 @@
-HTML_TEMPLATE = """<!DOCTYPE html>...
+from flask import Flask, request, jsonify, render_template_string, send_file
+import sqlite3
+import os
+
+app = Flask(__name__)
+
+# === Настройки ===
+ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', '4722')
+
+def init_db():
+    conn = sqlite3.connect('phonebook.db')
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS contacts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    phone TEXT NOT NULL,
+                    organization TEXT NOT NULL,
+                    position TEXT NOT NULL,
+                    email TEXT,
+                    address TEXT,
+                    notes TEXT
+                )''')
+    conn.commit()
+    conn.close()
+
+@app.route('/')
+def index():
+    return render_template_string(HTML_TEMPLATE)
+
+# Получить контакты + поиск
+@app.route('/api/contacts', methods=['GET'])
+def get_contacts():
+    search = request.args.get('q', '').strip()
+    conn = sqlite3.connect('phonebook.db')
+    conn.row_factory = sqlite3.Row
+    c = conn.cursor()
+    c.execute("SELECT * FROM contacts")
+    all_rows = c.fetchall()
+    conn.close()
+
+    if not search:
+        return jsonify([dict(row) for row in all_rows])
+
+    # Фильтрация на Python — поддерживает кириллицу
+    search_lower = search.lower()
+    filtered = []
+    for row in all_rows:
+        r = dict(row)
+        if (search_lower in str(r['name']).lower() or
+            search_lower in str(r['phone']).lower() or
+            search_lower in str(r['email'] or '').lower() or
+            search_lower in str(r['address'] or '').lower()):
+            filtered.append(r)
+    return jsonify(filtered)
+
+# Добавить контакт
+@app.route('/api/contacts', methods=['POST'])
+def add_contact():
+    data = request.json
+    required = ['name', 'phone', 'organization', 'position']
+    if not all(k in data for k in required):
+        return jsonify({"error": "Обязательные поля не заполнены"}), 400
+
+    conn = sqlite3.connect('phonebook.db')
+    c = conn.cursor()
+    c.execute("""INSERT INTO contacts 
+                 (name, phone, organization, position, email, address, notes) 
+                 VALUES (?, ?, ?, ?, ?, ?, ?)""",
+              (data.get('name'),
+               data.get('phone'),
+               data.get('organization', 'КрасЮнит'),
+               data.get('position'),
+               data.get('email', ''),
+               data.get('address', ''),
+               data.get('notes', '')))
+    conn.commit()
+    conn.close()
+    return jsonify({"success": True}), 201
+
+# Редактирование и удаление
+@app.route('/api/contacts/<int:contact_id>', methods=['PUT', 'DELETE'])
+def manage_contact(contact_id):
+    password = request.headers.get('X-Admin-Password')
+    if password != ADMIN_PASSWORD:
+        return jsonify({"error": "Доступ запрещён"}), 403
+
+    conn = sqlite3.connect('phonebook.db')
+    c = conn.cursor()
+
+    if request.method == 'DELETE':
+        c.execute("DELETE FROM contacts WHERE id = ?", (contact_id,))
+        conn.commit()
+        conn.close()
+        return jsonify({"success": True})
+
+    elif request.method == 'PUT':
+        data = request.json
+        c.execute("""UPDATE contacts SET 
+                     name = ?, phone = ?, organization = ?, position = ?,
+                     email = ?, address = ?, notes = ?
+                     WHERE id = ?""",
+                  (data.get('name'),
+                   data.get('phone'),
+                   data.get('organization', 'КрасЮнит'),
+                   data.get('position'),
+                   data.get('email', ''),
+                   data.get('address', ''),
+                   data.get('notes', ''),
+                   contact_id))
+        conn.commit()
+        conn.close()
+        return jsonify({"success": True})
+
+# 💾 Бэкап базы данных
+@app.route('/api/backup')
+def download_backup():
+    return send_file('phonebook.db', as_attachment=True, download_name='krasunit_phonebook.db')
+
+# === HTML + JS ===
+HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="ru">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <link rel="manifest" href="/static/manifest.json">
-  <meta name="theme-color" content="#2c3e50">
   <title>Корпоративный справочник «КрасЮнит»</title>
   <style>
     body {
       font-family: Arial;
       max-width: 750px;
       margin: 20px auto;
-      padding: 0;
+      padding: 15px;
       background: #f9f9f9;
     }
     .content {
@@ -36,6 +153,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>...
     }
     button:hover { opacity: 0.9; }
     .delete-btn { background: #f44336; }
+    .backup-btn { background: #9C27B0; }
     .contact {
       background: #f9f9f9;
       padding: 12px;
@@ -88,7 +206,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>...
       <h3>🛠️ Админка (только для владельца)</h3>
       <input type="password" id="adminPass" placeholder="Пароль администратора" />
       
-      <button class="backup-btn" style="background:#9C27B0;margin-top:12px;" onclick="backupDB()">💾 Бэкап базы</button>
+      <button class="backup-btn" style="margin-top:12px;" onclick="backupDB()">💾 Бэкап базы</button>
       
       <div id="editForm" style="display:none; margin-top:15px;">
         <input type="hidden" id="editId" />
@@ -259,3 +377,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>...
 </body>
 </html>
 """
+
+if __name__ == '__main__':
+    init_db()
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
