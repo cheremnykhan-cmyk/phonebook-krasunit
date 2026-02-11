@@ -5,6 +5,11 @@ import csv
 from io import StringIO, BytesIO
 
 app = Flask(__name__)
+body {
+  background: linear-gradient(135deg, #f5f7fa 0%, #e4e7f0 100%);
+  /* или */
+  background: url('/static/bg-light.png') repeat;
+}
 
 # === Настройки ===
 ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'KrasUnit2026!PhoneBook')
