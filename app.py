@@ -1,157 +1,3 @@
-from flask import Flask, request, jsonify, render_template_string, send_file
-import sqlite3
-import os
-import csv
-import json
-from io import StringIO, BytesIO
-
-app = Flask(__name__)
-
-# === Настройки ===
-ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'KrasUnit2026!PhoneBook')
-
-def init_db():
-    conn = sqlite3.connect('phonebook.db')
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS contacts (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT NOT NULL,
-                    phone TEXT NOT NULL,
-                    organization TEXT NOT NULL,
-                    position TEXT NOT NULL,
-                    email TEXT,
-                    address TEXT,
-                    notes TEXT
-                )''')
-    conn.commit()
-    conn.close()
-
-@app.route('/')
-def index():
-    return render_template_string(HTML_TEMPLATE)
-
-# Получить контакты + поиск
-@app.route('/api/contacts', methods=['GET'])
-def get_contacts():
-    search = request.args.get('q', '').lower()
-    conn = sqlite3.connect('phonebook.db')
-    conn.row_factory = sqlite3.Row
-    c = conn.cursor()
-    if search:
-        c.execute("""SELECT * FROM contacts 
-                     WHERE LOWER(name) LIKE ? OR 
-                           LOWER(phone) LIKE ? OR 
-                           LOWER(email) LIKE ? OR 
-                           LOWER(address) LIKE ?""",
-                  (f'%{search}%', f'%{search}%', f'%{search}%', f'%{search}%'))
-    else:
-        c.execute("SELECT * FROM contacts")
-    contacts = [dict(row) for row in c.fetchall()]
-    conn.close()
-    return jsonify(contacts)
-
-# Экспорт в CSV
-@app.route('/api/export/csv')
-def export_csv():
-    conn = sqlite3.connect('phonebook.db')
-    c = conn.cursor()
-    c.execute("SELECT * FROM contacts")
-    rows = c.fetchall()
-    conn.close()
-
-    output = StringIO()
-    writer = csv.writer(output)
-    writer.writerow(['ID', 'Имя', 'Телефон', 'Организация', 'Должность', 'Email', 'Адрес', 'Примечания'])
-    for row in rows:
-        writer.writerow(row)
-    
-    output.seek(0)
-    return send_file(
-        BytesIO(output.getvalue().encode('utf-8')),
-        mimetype='text/csv',
-        as_attachment=True,
-        download_name='krasunit_phonebook.csv'
-    )
-
-# Экспорт в JSON
-@app.route('/api/export/json')
-def export_json():
-    conn = sqlite3.connect('phonebook.db')
-    c = conn.cursor()
-    c.execute("SELECT * FROM contacts")
-    contacts = [dict(row) for row in c.fetchall()]
-    conn.close()
-    return send_file(
-        BytesIO(json.dumps(contacts, ensure_ascii=False, indent=2).encode('utf-8')),
-        mimetype='application/json',
-        as_attachment=True,
-        download_name='krasunit_phonebook.json'
-    )
-
-# 💾 СКАЧАТЬ ПОЛНУЮ БАЗУ ДАННЫХ
-@app.route('/api/backup')
-def download_backup():
-    return send_file('phonebook.db', as_attachment=True, download_name='krasunit_phonebook.db')
-
-# Добавить контакт
-@app.route('/api/contacts', methods=['POST'])
-def add_contact():
-    data = request.json
-    required = ['name', 'phone', 'organization', 'position']
-    if not all(k in data for k in required):
-        return jsonify({"error": "Обязательные поля не заполнены"}), 400
-
-    conn = sqlite3.connect('phonebook.db')
-    c = conn.cursor()
-    c.execute("""INSERT INTO contacts 
-                 (name, phone, organization, position, email, address, notes) 
-                 VALUES (?, ?, ?, ?, ?, ?, ?)""",
-              (data.get('name'),
-               data.get('phone'),
-               data.get('organization', 'КрасЮнит'),
-               data.get('position'),
-               data.get('email', ''),
-               data.get('address', ''),
-               data.get('notes', '')))
-    conn.commit()
-    conn.close()
-    return jsonify({"success": True}), 201
-
-# Редактирование и удаление
-@app.route('/api/contacts/<int:contact_id>', methods=['PUT', 'DELETE'])
-def manage_contact(contact_id):
-    password = request.headers.get('X-Admin-Password')
-    if password != ADMIN_PASSWORD:
-        return jsonify({"error": "Доступ запрещён"}), 403
-
-    conn = sqlite3.connect('phonebook.db')
-    c = conn.cursor()
-
-    if request.method == 'DELETE':
-        c.execute("DELETE FROM contacts WHERE id = ?", (contact_id,))
-        conn.commit()
-        conn.close()
-        return jsonify({"success": True})
-
-    elif request.method == 'PUT':
-        data = request.json
-        c.execute("""UPDATE contacts SET 
-                     name = ?, phone = ?, organization = ?, position = ?,
-                     email = ?, address = ?, notes = ?
-                     WHERE id = ?""",
-                  (data.get('name'),
-                   data.get('phone'),
-                   data.get('organization', 'КрасЮнит'),
-                   data.get('position'),
-                   data.get('email', ''),
-                   data.get('address', ''),
-                   data.get('notes', ''),
-                   contact_id))
-        conn.commit()
-        conn.close()
-        return jsonify({"success": True})
-
-# === HTML + JS ===
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="ru">
@@ -174,6 +20,7 @@ HTML_TEMPLATE = """
     h2 { margin-top: 30px; color: #333; }
     hr { margin: 20px 0; }
     #search { margin-bottom: 15px; }
+    .backup-section { margin-top: 40px; padding-top: 20px; border-top: 1px solid #eee; }
   </style>
 </head>
 <body>
@@ -190,10 +37,6 @@ HTML_TEMPLATE = """
     <input type="text" id="address" placeholder="Адрес" />
     <textarea id="notes" rows="2" placeholder="Примечания"></textarea>
     <button onclick="addContact()">➕ Добавить контакт</button>
-    <br><br>
-    <button class="export-btn" onclick="exportCSV()">📥 Экспорт в CSV</button>
-    <button class="export-btn" onclick="exportJSON()">📄 Экспорт в JSON</button>
-    <button class="backup-btn" onclick="backupDB()">💾 Бэкап базы (phonebook.db)</button>
   </div>
 
   <h2>Контакты:</h2>
@@ -215,6 +58,13 @@ HTML_TEMPLATE = """
       <button onclick="updateContact()">✅ Сохранить</button>
       <button class="delete-btn" style="background:#f44336;" onclick="deleteContact()">🗑️ Удалить</button>
     </div>
+  </div>
+
+  <!-- Кнопки экспорта и бэкапа — В САМЫЙ НИЗ -->
+  <div class="backup-section">
+    <button class="export-btn" onclick="exportCSV()">📥 Экспорт в CSV</button>
+    <button class="export-btn" onclick="exportJSON()">📄 Экспорт в JSON</button>
+    <button class="backup-btn" onclick="backupDB()">💾 Бэкап базы (phonebook.db)</button>
   </div>
 
   <script>
@@ -378,7 +228,3 @@ HTML_TEMPLATE = """
 </body>
 </html>
 """
-
-if __name__ == '__main__':
-    init_db()
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
