@@ -8,7 +8,7 @@ from io import StringIO, BytesIO
 app = Flask(__name__)
 
 # === Настройки ===
-ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'KrasUnit2026!PhoneBook')
+ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', '4722')
 
 def init_db():
     conn = sqlite3.connect('phonebook.db')
@@ -152,7 +152,6 @@ def manage_contact(contact_id):
         return jsonify({"success": True})
 
 # === HTML + JS ===
-HTML_TEMPLATE = """
 HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html lang="ru">
@@ -382,6 +381,8 @@ HTML_TEMPLATE = """
   </script>
 </body>
 </html>
+"""
+
 if __name__ == '__main__':
     init_db()
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
